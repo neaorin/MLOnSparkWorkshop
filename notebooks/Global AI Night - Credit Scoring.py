@@ -927,12 +927,12 @@ testSDF.createOrReplaceTempView(temp_table_name)
 
 # COMMAND ----------
 
-#testSDF = imputeAgeWithMedian(testSDF)
+testSDF = imputeAgeWithMedian(testSDF)
 
-#testSDF = testSDF.withColumn('age_banding', age_banding_udf(testSDF.age))
-#testSDF = testSDF.drop('age')
+testSDF = testSDF.withColumn('age_banding', age_banding_udf(testSDF.age))
+testSDF = testSDF.drop('age')
 
-#testSDF = addInitialDebtColumn(testSDF)
+testSDF = addInitialDebtColumn(testSDF)
 testSDF = imputeMonthlyIncome(testSDF)
 testSDF = recalculateDebtRatio(testSDF)
 #testSDF = defaultDebtRatioToThreshold(testSDF)
