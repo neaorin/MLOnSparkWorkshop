@@ -48,8 +48,8 @@
 # MAGIC 
 # MAGIC 1. Data import
 # MAGIC 2. Exploratory Data Analysis & Data Cleaning
-# MAGIC 3. Model training & validation
-# MAGIC 4. Model evaluation
+# MAGIC 3. Model Training & Validation
+# MAGIC 4. Evaluating the best model from AutoML against real unseen data
 
 # COMMAND ----------
 
@@ -68,8 +68,8 @@ training_data_filename = "cs_training.csv"
 test_data_url = "https://raw.githubusercontent.com/dlawrences/GlobalAINightBucharest/master/data/cs-test.csv"
 test_data_filename = "cs_test.csv"
 
-dbfs_data_folder = "/dbfs/FileStore/data/"
-project_name = 'constantscoring'
+dbfs_data_folder = "dbfs/FileStore/data/"
+project_name = 'credit-scoring'
 
 dbfs_project_folder = dbfs_data_folder + project_name + "/"
 
@@ -268,7 +268,7 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Based on the cleaned age column, let's create an age banding column (bins) which correlate better to credit risk.
+# MAGIC Based on the cleaned age column, let's create an age banding column (bins) which correlates better to credit risk.
 # MAGIC 
 # MAGIC For this example, we are going to use the bins included in this paper: [figure in paper](https://www.researchgate.net/figure/Percentage-of-default-risk-among-different-age-groups_fig2_268345909)
 
@@ -375,7 +375,7 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC A **MonthlyIncome** between $1 and $7 is again a bit suspicious, let's see how it looks:
+# MAGIC A **MonthlyIncome** between $1 and $7 is again a bit suspicious (having worked under 1hr per month), let's see how it looks:
 
 # COMMAND ----------
 
@@ -518,7 +518,7 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC From **35137** records down to **6480**. Let's see how it looks from a distribution point of view.
+# MAGIC From **35137** records down to this. Let's see how it looks from a distribution point of view.
 
 # COMMAND ----------
 
@@ -533,7 +533,7 @@ display(fig)
 # MAGIC %md
 # MAGIC It seems this values are going up to **x**. Individuals may exceed a **DebtRatio** of 1 whenever they are lending more than they are earning (and some people in difficult scenarios tend to do that).
 # MAGIC 
-# MAGIC Let's default the higher values to a threshold of **3**.
+# MAGIC Let's default the higher values to a threshold of **1.5**.
 
 # COMMAND ----------
 
@@ -659,11 +659,13 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Training and Evaluation
+# MAGIC ## Model Training and Validation
 # MAGIC 
 # MAGIC In order to train this problem, we are going to use the AutoML from the Azure Machine Learning Service SDK.
 # MAGIC 
 # MAGIC We will provide the cleansed training data to Azure ML which will test multiple types of algorithms in order to maximize a certain evaluation criteria we define. As per the [initial challenge from kaggle](https://www.kaggle.com/c/GiveMeSomeCredit), the criteria of choice is AUC (Area Under Curve).
+# MAGIC 
+# MAGIC The validation during training is done by using cross validation in 10 folds.
 # MAGIC 
 # MAGIC After we are done, the best trained model will be evaluated against a separated dataset (the test dataset) in order to understand real _performance_.
 # MAGIC 
@@ -733,20 +735,32 @@ from azureml.train.automl.run import AutoMLRun
 
 # COMMAND ----------
 
-# MAGIC %scala
-# MAGIC import scala.util.matching.Regex
-# MAGIC val notebookPath = dbutils.notebook.getContext().notebookPath.get
-# MAGIC dbutils.widgets.text("username", ("\\w+@".r findFirstIn notebookPath).get.dropRight(1))
+# Get the last seven letters of the username which will be used to build up exp name
+import re
+
+regexStr = r'^([^@]+)@[^@]+$'
+emailStr = dbutils.notebook.entry_point.getDbutils().notebook().getContext().tags().apply("user")
+matchobj = re.search(regexStr, emailStr)
+if not matchobj is None:
+    if len(matchobj.group(1)) > 10:
+        notebook_username = matchobj.group(1)[-10:]
+    else:
+        notebook_username = matchobj.group(1)
+        
+    print(notebook_username)
+else:
+    print("Did not match")
 
 # COMMAND ----------
 
 # Choose a name for the experiment and specify the project folder.
-experiment_base_name = 'automl-credit-scoring-'
-notebook_username = dbutils.widgets.get("username")
-experiment_suffix_name = notebook_username + "-" + str(random.randint(1000, 9999))
+experiment_base_name = 'automl-scoring-'
+experiment_suffix_name = notebook_username.replace(".", "") + "-" + str(random.randint(1000, 9999))
 
 experiment_name = experiment_base_name + experiment_suffix_name
 project_folder = './globalainight_projects/automl-credit-scring'
+
+print(experiment_name)
 
 experiment = Experiment(ws, experiment_name)
 
@@ -790,17 +804,17 @@ training_sdf = training_sdf.drop("Idx", "initialDebt")
 training_sdf \
 .drop("SeriousDlqin2yrs") \
 .toPandas() \
-.to_csv(dbfs_project_folder + "constant-scoring-training-vars.csv")
+.to_csv("/dbfs/FileStore/tables/constant-scoring-training-vars.csv")
 
 training_sdf \
 .select("SeriousDlqin2yrs") \
 .toPandas() \
-.to_csv(dbfs_project_folder + "constant-scoring-training-res.csv")
+.to_csv("/dbfs/FileStore/tables/constant-scoring-training-res.csv")
 
-X_train = dataprep.read_csv(path = dbfs_project_folder + "constant-scoring-training-vars.csv", separator = ',')
+X_train = dataprep.read_csv(path = "/dbfs/FileStore/tables/constant-scoring-training-vars.csv", separator = ',')
 X_train = X_train.drop_columns("Column1")
 
-Y_train = dataprep.read_csv(path = dbfs_project_folder + "constant-scoring-training-res.csv", separator = ',')
+Y_train = dataprep.read_csv(path = "/dbfs/FileStore/tables/constant-scoring-training-res.csv", separator = ',')
 Y_train = Y_train.drop_columns("Column1")
 
 # COMMAND ----------
@@ -935,8 +949,8 @@ testSDF = testSDF.drop('age')
 testSDF = addInitialDebtColumn(testSDF)
 testSDF = imputeMonthlyIncome(testSDF)
 testSDF = recalculateDebtRatio(testSDF)
-#testSDF = defaultDebtRatioToThreshold(testSDF)
-#testSDF = defaultRevolvingUtilizationToThreshold(testSDF)
+testSDF = defaultDebtRatioToThreshold(testSDF)
+testSDF = defaultRevolvingUtilizationToThreshold(testSDF)
 testSDF = imputeNumberOfDependents(testSDF)
 
 # Make the dataframe available in the SQL context
