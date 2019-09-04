@@ -1,7 +1,7 @@
 # Global AI Night Bucharest
 Welcome to the Global AI Night - Bucharest Edition official repository!
 
-During these workshops you have the chance to get your hands dirty so that by the end of the Night you'll be able to infuse Machine Learning into your own applications. Level: beginner – intermediate.
+During this AI Night you will get inspired through sessions and get your hands dirty during the workshops. By the end of the night you will be able to infuse AI into your applications. Level: intermediate.
 
 * _Workshop Part #1_ __Developing a credit scoring AI-enabled model with Azure Databricks__ by __Laurentiu Diaconu__ Data Enablement Consultant, Softelligence
 
