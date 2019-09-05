@@ -7,6 +7,12 @@ During this AI Night you will get inspired through sessions and get your hands d
 
 * _Workshop Part #2_ __Building an end-to-end predictive pipeline for credit scoring in Azure__ by __Sorin Peste__  Technical Evangelist Data & AI, Microsoft
 
-__Feedback:__ how did we do? Fill in the survey to let us know: https://www.surveymonkey.com/r/HNJLMHP
+## Setup
+
+Please see the [Setup page](Setup.md) for instructions on how to set up your environment for this workshop. 
+
+## Feedback
+
+How did we do? Fill in the survey to let us know: https://www.surveymonkey.com/r/HNJLMHP
 
 For questions please reach out to marketing@softelligence.net
