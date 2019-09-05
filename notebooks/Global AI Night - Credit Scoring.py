@@ -675,7 +675,7 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 
 # COMMAND ----------
 
-subscription_id = "4bed8ea1-5766-44f7-9e13-f78ed002c0b9" #you should be owner or contributor
+subscription_id = "6787a35f-386b-4845-91d1-695f24e0924b" #you should be owner or contributor
 resource_group = "GlobalAINight-ML-RG" #you should be owner or contributor
 workspace_name = "globalainight-ml-wksp" #your workspace name
 
@@ -859,7 +859,7 @@ automl_config = AutoMLConfig(task = 'classification',
                              debug_log = 'automl_errors.log',
                              primary_metric = 'AUC_weighted',
                              iteration_timeout_minutes = 10,
-                             iterations = 15,
+                             iterations = 10,
                              n_cross_validations = 10,
                              max_concurrent_iterations = 1, #change it based on number of worker nodes
                              verbosity = logging.INFO,
