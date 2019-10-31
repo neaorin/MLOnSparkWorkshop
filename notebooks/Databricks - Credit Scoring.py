@@ -1,7 +1,7 @@
 # Databricks notebook source
 # MAGIC %md
 # MAGIC 
-# MAGIC # Global AI Night - Credit Scoring
+# MAGIC # Databricks - Credit Scoring
 # MAGIC 
 # MAGIC ## Introduction
 # MAGIC 

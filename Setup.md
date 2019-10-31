@@ -1,4 +1,4 @@
-# Global AI Night Bucharest - Lab Setup Instructions
+# Machine Learning With Apache Spark Hands-on Workshop - Lab Setup Instructions
 
 In order to set up your lab environment, please follow these steps.
 
@@ -20,12 +20,13 @@ Once you have access to an Azure subscription, follow these steps to set up the 
 
     |  Name   |      Type      |   |
     |----------|:-------------:|------:|
-    | **globalainight-ml-wksp** |  Machine Learning Service Workspace | [How to create](https://docs.microsoft.com/en-us/azure/machine-learning/service/how-to-manage-workspace#create-a-workspace) |
-    | **globalainight-databricks** |   Azure Databricks Service   | [How to create](https://docs.microsoft.com/en-us/azure/azure-databricks/quickstart-create-databricks-workspace-portal#create-an-azure-databricks-workspace) |
+    | **spark-databricks** |   Azure Databricks Service   | [How to create](https://docs.microsoft.com/en-us/azure/azure-databricks/quickstart-create-databricks-workspace-portal#create-an-azure-databricks-workspace) |
+    | **spark-ml-wksp** |  Machine Learning Service Workspace | [How to create](https://docs.microsoft.com/en-us/azure/machine-learning/service/how-to-manage-workspace#create-a-workspace) |
+    
 
     ![Resource Group](./media/setup-services.jpg)
 
-4. Navigate to the **globalainight-databricks**    Azure Databricks Service, and click the **Launch Workspace** button.
+4. Navigate to the Azure Databricks Service you created, and click the **Launch Workspace** button.
 
     ![Resource Group](./media/setup-db-launch.jpg)
 
@@ -35,12 +36,12 @@ Once you have access to an Azure subscription, follow these steps to set up the 
 
 6. In the Import wizard, select **URL** and import the following two files from this Github repository:
 
-    - https://raw.githubusercontent.com/dlawrences/GlobalAINightBucharest/master/notebooks/Global%20AI%20Night%20-%20Credit%20Scoring.py
-    - https://raw.githubusercontent.com/dlawrences/GlobalAINightBucharest/master/notebooks/Global%20AI%20Night%20-%20Service%20Deployment.py
+    - https://raw.githubusercontent.com/neaorin/MLOnSparkWorkshop/master/notebooks/Databricks%20-%20Credit%20Scoring.py
+    - https://raw.githubusercontent.com/neaorin/MLOnSparkWorkshop/master/notebooks/Databricks%20-%20Service%20Deployment.py
 
     > NOTE: You will need to perform the Import step once for each file.
 
-7. Open the first notebook, **Global AI Night - Credit Scoring**. In the upper left area of the notebook window, click the *Detached* area to select a cluster to attach to and run your notebook. 
+7. Open the first notebook, **Databricks - Credit Scoring**. In the upper left area of the notebook window, click the *Detached* area to select a cluster to attach to and run your notebook. 
 
     ![Resource Group](./media/setup-db-attach.jpg)
 

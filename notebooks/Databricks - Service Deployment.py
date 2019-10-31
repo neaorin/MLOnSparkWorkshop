@@ -14,7 +14,7 @@
 
 # MAGIC %md ## Prerequisites
 # MAGIC 
-# MAGIC You need to have run the **Global AI Night - Credit Scoring** notebook successfully, and as a result have a completed AutoML Experiment.
+# MAGIC You need to have run the **Databricks - Credit Scoring** notebook successfully, and as a result have a completed AutoML Experiment.
 
 # COMMAND ----------
 

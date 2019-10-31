@@ -1,18 +1,14 @@
-# Global AI Night Bucharest
-Welcome to the Global AI Night - Bucharest Edition official repository!
+# Machine Learning With Apache Spark Hands-on Workshop
 
-During this AI Night you will get inspired through sessions and get your hands dirty during the workshops. By the end of the night you will be able to infuse AI into your applications. Level: intermediate.
+Welcome to the Machine Learning With Apache Spark Hands-on Workshop!
 
-* _Workshop Part #1_ __Developing a credit scoring AI-enabled model with Azure Databricks__ by __Laurentiu Diaconu__ Data Enablement Consultant, Softelligence
+* _Workshop Part #1_ __Developing a credit scoring AI-enabled model with Spark and Azure Databricks__ 
 
-* _Workshop Part #2_ __Building an end-to-end predictive pipeline for credit scoring in Azure__ by __Sorin Peste__  Technical Evangelist Data & AI, Microsoft
+* _Workshop Part #2_ __Running a Predictive Model for Credit Scoring in Production__
+
+Trainer: __Sorin Peste__, Data & AI Cloud Solution Architect, Microsoft
 
 ## Setup
 
 Please see the [Setup page](Setup.md) for instructions on how to set up your environment for this workshop. 
 
-## Feedback
-
-How did we do? Fill in the survey to let us know: https://www.surveymonkey.com/r/HNJLMHP
-
-For questions please reach out to marketing@softelligence.net
