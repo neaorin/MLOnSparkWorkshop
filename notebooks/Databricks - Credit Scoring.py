@@ -177,7 +177,7 @@ display(summary.select(*((lit(rows)-col(c)).alias(c) for c in trainingSDF.column
 
 # MAGIC %md
 # MAGIC 
-# MAGIC There seems to be a lot of **class imbalance** going on around here. Let's understand the positive event rate in our target class.
+# MAGIC There seems to be a lot of **class imbalance** going on. Let's understand the positive event rate in our target class.
 
 # COMMAND ----------
 
@@ -203,9 +203,9 @@ print("Positive event rate: {} %".format(class_1/(class_0+class_1) * 100))
 # MAGIC %md
 # MAGIC ### Age variable
 # MAGIC 
-# MAGIC We are interested in knowing the distribution of the **age** variable. Ideally, we would want this to be a normal distribution altogether.
+# MAGIC We are interested in knowing the distribution of the **age** variable. 
 # MAGIC 
-# MAGIC We are also not looking for customers under the legal age of 18 years. If any, we will impute the age of these with the median of the column.
+# MAGIC We are not looking for customers under the legal age of 18 years. If any, we will impute the age of these with the median of the column.
 
 # COMMAND ----------
 
@@ -286,10 +286,18 @@ display(fig)
 
 # COMMAND ----------
 
-# MAGIC %md
-# MAGIC Based on the cleaned age column, let's create an age banding column (bins) which correlates better to credit risk.
+# MAGIC %sql
 # MAGIC 
-# MAGIC For this example, we are going to use the bins included in this paper: [figure in paper](https://www.researchgate.net/figure/Percentage-of-default-risk-among-different-age-groups_fig2_268345909)
+# MAGIC SELECT SeriousDlqin2yrs, age FROM trainingSDF
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC Based on the cleaned age column, let's create an age banding column (bins) which might be better predictors to credit risk.
+# MAGIC 
+# MAGIC For this example, we are going to use the bins included in this paper: [figure in paper](https://www.researchgate.net/figure/Percentage-of-default-risk-among-different-age-groups_fig2_268345909).
+# MAGIC 
+# MAGIC > NOTE: For simplicity we are using a [Spark UDF](https://databricks.com/blog/2017/10/30/introducing-vectorized-udfs-for-pyspark.html) (User-defined function), although that may pose performance problems if the dataset is large. Consider using Scala for the production data preparation pipeline once the data scientist has defined and tested one that should be used in production.
 
 # COMMAND ----------
 
@@ -373,6 +381,7 @@ display(fig)
 
 fig, ax = plt.subplots()
 
+sns.set(style="whitegrid")
 ax = sns.boxplot(x="SeriousDlqin2yrs", y="MonthlyIncome", data = trainingSDF.toPandas())
 ax.set_yscale("log")
 
@@ -381,8 +390,24 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC We can also display the quartile values of MonthlyIncome for each class, using Spark SQL.
+
+# COMMAND ----------
+
+# MAGIC %sql
 # MAGIC 
-# MAGIC That's better. One thing is certain - people which have gone through issues usually have a lower income. However, it looks like the dataset contains really low values - like 5$ or less a month which is really odd.
+# MAGIC SELECT SeriousDlqin2yrs, 
+# MAGIC   percentile(MonthlyIncome,0.25) AS Q1, 
+# MAGIC   percentile(MonthlyIncome,0.5) AS Q2_Median, 
+# MAGIC   percentile(MonthlyIncome,0.75) AS Q3
+# MAGIC FROM trainingSDF 
+# MAGIC GROUP BY SeriousDlqin2yrs
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC That's better. One thing is certain - people which have gone through issues usually have a lower income. However, from the original summary statistics it also looked like the dataset contained really low values - like 5$ or less a month which is really odd.
 # MAGIC 
 # MAGIC For our reference, let's view the [Characteristics of Minimum Wage Workers in the US: 2010](https://www.bls.gov/cps/minwage2010.htm). In this article, it is stated that the prevailing Federal minimum wage was $7.25 per hour.
 # MAGIC 
@@ -434,7 +459,7 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 147 rows is a low percentage of samples from the whole dataset, so we will be keeping these as they are.
+# MAGIC 100-odd rows is a low percentage of samples from the whole dataset, so for now we will be keeping these as they are.
 
 # COMMAND ----------
 
@@ -532,7 +557,7 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC From **35137** records down to this. Let's see how it looks from a distribution point of view.
+# MAGIC Let's see how it looks from a distribution point of view.
 
 # COMMAND ----------
 
@@ -682,6 +707,12 @@ display(trainingSDF.describe())
 
 # MAGIC %md
 # MAGIC ## Building our first model
+# MAGIC 
+# MAGIC For our first attempt at building a model we will use a relatively simple algorithm, Decision Trees.
+# MAGIC 
+# MAGIC ![Decision Tree Example](https://miro.medium.com/max/792/1*XMId5sJqPtm8-RIwVVz2tg.png)
+# MAGIC 
+# MAGIC [Click here](https://www.youtube.com/watch?v=7VeUPuFGJHk) for a straightforward video explanation of how Decision Trees work, and how we can build one using Gini Impurity.
 
 # COMMAND ----------
 
@@ -708,26 +739,34 @@ feature_assembler = VectorAssembler(
    'MonthlyIncome'],
     outputCol="features")
 
-# scale features 
-scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures")
-
 
 # Train a DecisionTree model.
-decision_tree_classifier = DecisionTreeClassifier(labelCol="SeriousDlqin2yrs", featuresCol="scaledFeatures",
+decision_tree_classifier = DecisionTreeClassifier(labelCol="SeriousDlqin2yrs", featuresCol="features",
                             impurity="gini", maxDepth=5, seed=1)
 
 # Chain assembler and model in a Pipeline
-dtc_pipeline = Pipeline(stages=[categorical_indexer, feature_assembler, scaler, decision_tree_classifier])
+dtc_pipeline = Pipeline(stages=[categorical_indexer, feature_assembler, decision_tree_classifier])
 
 # Train model. 
 dtc_model = dtc_pipeline.fit(trainingSDF)
 
-print(dtc_model.stages[3])
+print(dtc_model.stages[2])
+
+# COMMAND ----------
+
+#let's get a text-based representation of the tree
+print(dtc_model.stages[2].toDebugString)
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC # Testing the model
+# MAGIC 
+# MAGIC We will now test the model by predicting on the test data. Once we obtain predictions, we use the predictions and the ground truth values from the test dataset to compute binary classification evaluation metrics.
+# MAGIC 
+# MAGIC Before we can use the model, we need to apply to the test data the same transformations we did in the preprocessing stage.
+# MAGIC 
+# MAGIC Notice that se are using statistical values like `trainingMedianAge` which were computed on the training data set. It's good practice to treat the test dataset as completely new information, and not use it in any way except actually testing our ML pipeline.
 
 # COMMAND ----------
 
@@ -756,6 +795,12 @@ dtc_predictions = dtc_model.transform(testingSDF)
 # Select example rows to display.
 display(dtc_predictions.select("probability", "prediction", "SeriousDlqin2yrs"))
 
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC First, we're going to calculate and display the [Confusion Matrix](https://en.wikipedia.org/wiki/Confusion_matrix) for our binary classifier.
 
 # COMMAND ----------
 
@@ -793,6 +838,7 @@ plotConfusionMatrix(dtc_confusion_matrix)
 # COMMAND ----------
 
 tn, fp, fn, tp = dtc_confusion_matrix.ravel()
+print(f"Accuracy = (TP + TN) / (TP + FP + TN + FN) = {(tp+tn)/(tp+fp+tn+fn)}")
 print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
 print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
 
@@ -840,11 +886,19 @@ plotROCCurve(dtc_predictions)
 # MAGIC %md
 # MAGIC 
 # MAGIC ## Gradient Boosted Trees
+# MAGIC 
+# MAGIC Now we're going to try an ensemble model: [Gradient Boosted Trees](https://en.wikipedia.org/wiki/Gradient_boosting).
+# MAGIC 
+# MAGIC ![GBT](http://uc-r.github.io/public/images/analytics/gbm/boosted-trees-process.png)
+# MAGIC 
+# MAGIC [Click here](https://www.youtube.com/watch?v=3CC4N4z3GJc) for a nice visual explanation of how Gradient Boosting works.
 
 # COMMAND ----------
 
 from pyspark.ml.classification import GBTClassifier
 
+# scale features 
+scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures")
 
 # Train a Gradient-boosted tree classifier model.
 gbt_classifier = GBTClassifier(labelCol="SeriousDlqin2yrs", featuresCol="features",
@@ -857,6 +911,10 @@ gbt_pipeline = Pipeline(stages=[categorical_indexer, feature_assembler, scaler, 
 gbt_model = gbt_pipeline.fit(trainingSDF)
 
 print(gbt_model.stages[3])
+
+# COMMAND ----------
+
+print(gbt_model.stages[3].toDebugString)
 
 # COMMAND ----------
 
@@ -876,33 +934,6 @@ plotConfusionMatrix(gbt_confusion_matrix)
 tn, fp, fn, tp = gbt_confusion_matrix.ravel()
 print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
 print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
-
-# COMMAND ----------
-
-# plot the precision - recall curve
-from sklearn.metrics import precision_recall_curve
-
-def plotPRCurve(predictions):
-  results = predictions.select(['probability', 'SeriousDlqin2yrs']).collect()
-  y_score = [float(i[0][1]) for i in results]
-  y_true = [float(i[1]) for i in results]
-
-  precision, recall, _ = precision_recall_curve(y_true, y_score, pos_label = 1)
-
-  fig, ax = plt.subplots()
-  ax.step(recall, precision)
-  ax.set_xlim([0.0, 1.0])
-  ax.set_ylim([0.0, 1.0])
-  ax.set_xlabel('Recall')
-  ax.set_ylabel('Precision')
-  ax.set_title('Precision - Recall Curve')
-  display(fig)
-
-plotPRCurve(gbt_predictions)
-
-# COMMAND ----------
-
-tn, fp, fn, tp = gbt_confusion_matrix.ravel()
 print(f"Sensitivity = TP / (TP + FN) = {tp/(tp+fn)}")
 print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
 
@@ -930,7 +961,7 @@ get_positive_probability=udf(lambda v:float(v[1]),FloatType())
 selected_threshold = 0.11
 pred_colname = f'prediction-threshold'
 gbt_predictions_threshold = gbt_predictions.withColumn(pred_colname, 
-                                       F.when(get_positive_probability('probability') < selected_threshold,0)
+                                       F.when(get_positive_probability('probability') <= selected_threshold,0)
                                                        .otherwise(1))
                                                        
 display(gbt_predictions_threshold.select("probability", "prediction", pred_colname, "SeriousDlqin2yrs"))                                                
@@ -955,6 +986,15 @@ print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
 # MAGIC %md
 # MAGIC 
 # MAGIC ## Hyperparameter Tuning
+# MAGIC 
+# MAGIC Until now we've built a Gradient Boosted classfier with just the default parameters (except `maxIter` which we set to 35).
+# MAGIC It would be useful to optimize the parameters for the algorithm (also called hyperparameters).
+# MAGIC 
+# MAGIC [Hyperparameter optimization](https://en.wikipedia.org/wiki/Hyperparameter_optimization) or tuning is the problem of choosing a set of optimal hyperparameters for a learning algorithm. A hyperparameter is a parameter whose value is used to control the learning process. By contrast, the values of other parameters (typically node weights) are learned.
+# MAGIC 
+# MAGIC We will combine Hyperparameter Tuning with [Cross-Validation](https://en.wikipedia.org/wiki/Cross-validation_(statistics)) on the training dataset, so we are able to even out the noise in the training data. It is mainly used in settings where the goal is prediction, and one wants to estimate how accurately a predictive model will perform in practice. 
+# MAGIC 
+# MAGIC ![HT and CV](https://cambridgecoding.files.wordpress.com/2016/03/gridsearch_cv.png)
 
 # COMMAND ----------
 
