@@ -8,6 +8,8 @@ Welcome to the Machine Learning With Apache Spark Hands-on Workshop!
 
 Trainer: __Sorin Peste__, Data & AI Cloud Solution Architect, Microsoft
 
+__Laurentiu Diaconu__, Data Enablement Consultant @ Softelligence, also contributed to the content for this workshop.
+
 ## Setup
 
 Please see the [Setup page](Setup.md) for instructions on how to set up your environment for this workshop. 

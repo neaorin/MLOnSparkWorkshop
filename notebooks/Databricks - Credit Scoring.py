@@ -102,13 +102,26 @@ first_row_is_header = "true"
 delimiter = ","
 
 # The applied options are for CSV files. For other file types, these will be ignored.
-trainingSDF = spark.read.format(file_type) \
+creditSDF = spark.read.format(file_type) \
   .option("inferSchema", infer_schema) \
   .option("header", first_row_is_header) \
   .option("sep", delimiter) \
   .load(file_location)
 
+display(creditSDF)
+
+# COMMAND ----------
+
+# MAGIC %md 
+# MAGIC 
+# MAGIC Now that we've loaded the dataset, the first thing we're going to do is set aside a part of it - 25 to 30 percent is a usual percentage - and not touch it until it's time to test our models.
+
+# COMMAND ----------
+
 temp_table_name = "trainingSDF"
+
+# Split the data into training and test sets (25% held out for testing)
+(trainingSDF, testingSDF) = creditSDF.randomSplit([0.75, 0.25], seed=1)
 
 # Make the dataframe available in the SQL context
 trainingSDF.createOrReplaceTempView(temp_table_name)
@@ -127,6 +140,15 @@ trainingSDF.printSchema()
 
 # Check of the summary statistics of the features
 display(trainingSDF.describe())
+
+# COMMAND ----------
+
+# highlight how many missing values we have for every feature
+from pyspark.sql.functions import lit, col
+
+rows = trainingSDF.count()
+summary = trainingSDF.describe().filter(col("summary") == "count")
+display(summary.select(*((lit(rows)-col(c)).alias(c) for c in trainingSDF.columns)))
 
 # COMMAND ----------
 
@@ -173,12 +195,11 @@ print("Positive event rate: {} %".format(class_1/(class_0+class_1) * 100))
 
 # MAGIC %md
 # MAGIC 
-# MAGIC A positive event rate of 6.68% is by no means ideal. Going through with this distribution for the target class may mean that the minorit class will be ignored by the algorithm we are going to use to model the problem, thus the model will be biased to customers which are not likely to default.
+# MAGIC A positive event rate of 6.6% is by no means ideal. Going through with this distribution for the target class may mean that the minorit class will be ignored by the algorithm we are going to use to model the problem, thus the model will be biased to customers which are not likely to default.
 # MAGIC 
 # MAGIC A couple of ideas which we are going to take into consideration going further to go around this problem:
-# MAGIC - given we have a lot of training data (150k observations), we may actually considering resampling the dataset using the **imbalanced-learn** module.
+# MAGIC - given we have a lot of training data (100k+ observations), we may actually considering resampling the dataset using the **imbalanced-learn** module.
 # MAGIC - we are going to use an evaluation metric which compensates the imbalance between classes, e.g. **AUC**
-# MAGIC - we are going to consider using ensemble models and try out some penalized models (e.g. Logit)
 
 # COMMAND ----------
 
@@ -190,6 +211,8 @@ print("Positive event rate: {} %".format(class_1/(class_0+class_1) * 100))
 # MAGIC We are also not looking for customers under the legal age of 18 years. If any, we will impute the age of these with the median of the column.
 
 # COMMAND ----------
+
+import matplotlib.ticker as ticker
 
 # spark.sql does not have any histogram method, however the RDD api does
 age_histogram = trainingSDF.select('age').rdd.flatMap(lambda x: x).histogram(10)
@@ -204,13 +227,14 @@ age_histogram_df = pd.DataFrame(
 
 ax = sns.barplot(x = "bin", y = "frequency", data = age_histogram_df)
 
+ax.get_xaxis().set_major_formatter(ticker.FuncFormatter(lambda x, p: format(age_histogram_df.iloc[x]['bin'], '.1f')))
+
 display(fig)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC The distribution is close to normal which is fine for us.
-# MAGIC However, it seems there may be customers under the legal age. Let's see how many.
+# MAGIC It seems there may be customers under the legal age. Let's see how many.
 
 # COMMAND ----------
 
@@ -227,19 +251,13 @@ display(trainingSDF.filter(trainingSDF.age < 18))
 # Import functions which will help us code an if statement
 from pyspark.sql import functions as F
 
-def imputeAgeWithMedian(df):
-  # Compute the median of the age variable
-  ageMedian = np.median(
-                  df.select('age')
-                       .collect()
-              )
+def imputeAgeWithMedian(df, medianAge):
 
-  # Update the spark DataFrame with the median for the rows where the age column
-  # is equal to 0
+  # Update with the median for the rows where the age columnis equal to 0
   df = df.withColumn('age',
                                        F.when(
                                            F.col('age') == 0,
-                                           ageMedian
+                                           medianAge
                                        ).otherwise(
                                            F.col('age')
                                        )
@@ -247,7 +265,9 @@ def imputeAgeWithMedian(df):
   
   return df
 
-trainingSDF = imputeAgeWithMedian(trainingSDF)
+# Compute the median of the age variable
+trainingMedianAge = np.median(trainingSDF.select('age').dropna().collect())
+trainingSDF = imputeAgeWithMedian(trainingSDF, trainingMedianAge)
 
 # Check to see that the only row shown above has a new age value
 display(trainingSDF.filter(trainingSDF.Idx == 65696))
@@ -255,7 +275,9 @@ display(trainingSDF.filter(trainingSDF.Idx == 65696))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC Finally, let's check the distribution of the age for each group, based on the values for the **SeriousDlqin2yrs** target variable
+# MAGIC Finally, let's check the distribution of the age for each group, based on the values for the **SeriousDlqin2yrs** target variable.
+# MAGIC 
+# MAGIC We're going to use a [box and whiskers plot](https://towardsdatascience.com/understanding-boxplots-5e2df7bcbd51?gi=9e6b6042f263) to better visualize the distribution.
 
 # COMMAND ----------
 
@@ -306,10 +328,12 @@ def bandingFunction(age):
     return ''
 
 age_banding_udf = udf(bandingFunction, StringType() )
-trainingSDF = trainingSDF.withColumn('age_banding', age_banding_udf(trainingSDF.age))
-trainingSDF = trainingSDF.drop('age')
 
-temp_table_name = 'trainingSDF'
+def addAgeBanding(df):
+  df = df.withColumn('age_banding', age_banding_udf(df.age))
+  return df.drop('age')
+
+trainingSDF = addAgeBanding(trainingSDF)
 
 trainingSDF.createOrReplaceTempView(temp_table_name)
 
@@ -317,11 +341,13 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 
 # MAGIC %md
 # MAGIC Let's now visualize the distribution.
+# MAGIC 
+# MAGIC NOTE: as an alternative to Python-based plotting libraries like *seaborn* or *pyplot* we can also use Databricks' built-in visualizations. Click on the Visualization button below the results of this cell to select a **Bar** chart.
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select age_banding, count(*) as Frequency from trainingSDF group by age_banding order by age_banding
+# MAGIC select age_banding, count(*) as Counts from trainingSDF group by age_banding order by age_banding
 
 # COMMAND ----------
 
@@ -343,7 +369,23 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC One thing is certain - people which have gone through issues usually have a lower income. However, it looks like the dataset contains really low values - like 5$ or less a month which is really odd.
+# MAGIC 
+# MAGIC Hmm, the chart isn't that useful, probably because we have some very large outliers (large *MonthlyIncome* values) skewing the plot. Let's try using a log scale for the y axis:
+
+# COMMAND ----------
+
+fig, ax = plt.subplots()
+
+ax = sns.boxplot(x="SeriousDlqin2yrs", y="MonthlyIncome", data = trainingSDF.toPandas())
+ax.set_yscale("log")
+
+display(fig)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC That's better. One thing is certain - people which have gone through issues usually have a lower income. However, it looks like the dataset contains really low values - like 5$ or less a month which is really odd.
 # MAGIC 
 # MAGIC For our reference, let's view the [Characteristics of Minimum Wage Workers in the US: 2010](https://www.bls.gov/cps/minwage2010.htm). In this article, it is stated that the prevailing Federal minimum wage was $7.25 per hour.
 # MAGIC 
@@ -368,19 +410,19 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC We suppose that the ones gathering this data have replaced **NULL** in this column to 1 to be able to calculate the **DebtRatio** using the data about the **TotalDebt** of the individual they had. This will be need to be treated this way:
+# MAGIC It may be the case than whoever gathered this data have replaced **NULL** in this column to 1 to be able to calculate the **DebtRatio** using the data about the **TotalDebt** of the individual they had. This will be need to be treated this way:
 # MAGIC - impute the **NULL** values with the median of the dataset
 # MAGIC - recalculate the **DebtRatio** given we know that the **TotalDebt** is currently equal for those individuals to the value of the **DebtRatio**
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC A **MonthlyIncome** between $1 and $7 is again a bit suspicious (having worked under 1hr per month), let's see how it looks:
+# MAGIC A very low **MonthlyIncome** between $1 and $7 is again a bit suspicious (having worked under 1hr per month). Let's see a list of people with very small monthly incomes:
 
 # COMMAND ----------
 
 # MAGIC %sql
-# MAGIC select MonthlyIncome, count(1) as Instances, avg(DebtRatio) from trainingSDF where MonthlyIncome between 1 and 7 group by MonthlyIncome order by 1
+# MAGIC select MonthlyIncome, count(1) as Instances, avg(DebtRatio) from trainingSDF where MonthlyIncome between 1 and 100 group by MonthlyIncome order by 1
 
 # COMMAND ----------
 
@@ -395,7 +437,7 @@ display(fig)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 147 rows is still nothing compared to the whole dataset, so no point in patching these.
+# MAGIC 147 rows is a low percentage of samples from the whole dataset, so we will be keeping these as they are.
 
 # COMMAND ----------
 
@@ -439,43 +481,17 @@ display(trainingSDF)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC After the initial **Debt** has been saved, we are good to start imputing the **MonthlyIncome** column:
-# MAGIC - where the actual value is missing (is null), we use the Spark Imputer with a median strategy
-# MAGIC - where the actual value is zero, we manually impute using the **NumPy** calculated median
+# MAGIC After the initial **Debt** has been saved, we are good to start imputing the **MonthlyIncome** column. 
+# MAGIC If the actual value is <= $7 or missing, we manually impute using the **numpy**-calculated median.
 
 # COMMAND ----------
 
-from pyspark.ml.feature import Imputer
-from pyspark.sql.types import DoubleType
-
-def imputeMonthlyIncome(df):
-  imputer = Imputer(
-      inputCols = ['MonthlyIncome'],
-      outputCols = ['imputed_MonthlyIncome'],
-      strategy = 'median'
-  )
-
-  # Columns are required to either double or float by the Imputer...
-  df = df.withColumn(
-      'double_MonthlyIncome',
-      df.MonthlyIncome.cast(DoubleType())
-  ).drop('MonthlyIncome') \
-   .withColumnRenamed('double_MonthlyIncome', 'MonthlyIncome')
-
-  df = imputer.fit(df).transform(df).drop('MonthlyIncome')
-
-  df = df.withColumnRenamed('imputed_MonthlyIncome', 'MonthlyIncome')
-
-  # Addressing MonthlyIncome of 0
-  incomeMedian = np.median(
-                  df.select('MonthlyIncome')
-                             .collect()
-              )
-
-  # Apply income median if the MonthlyIncome is 0
+def imputeMonthlyIncome(df, incomeMedian):
+  # Apply income median if the MonthlyIncome is <=7, or null
+  
   df = df.withColumn('MonthlyIncome',
                                        F.when(
-                                           (F.col('MonthlyIncome') == 1),
+                                           (((F.col('MonthlyIncome') >= 0) & (F.col('MonthlyIncome') <= 7)) | (F.col('MonthlyIncome').isNull())),
                                            incomeMedian
                                        ).otherwise(
                                            F.col('MonthlyIncome')
@@ -484,7 +500,8 @@ def imputeMonthlyIncome(df):
   
   return df
 
-trainingSDF = imputeMonthlyIncome(trainingSDF)
+trainingIncomeMedian = np.median(trainingSDF.select('MonthlyIncome').dropna().collect())
+trainingSDF = imputeMonthlyIncome(trainingSDF, trainingIncomeMedian)
 
 # COMMAND ----------
 
@@ -525,13 +542,14 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 fig, ax = plt.subplots()
 
 ax = sns.boxplot(x="DebtRatio", data = trainingSDF.toPandas())
+ax.set_xscale("log")
 
 display(fig)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC It seems this values are going up to **x**. Individuals may exceed a **DebtRatio** of 1 whenever they are lending more than they are earning (and some people in difficult scenarios tend to do that).
+# MAGIC It seems this values are going up into the hundreds. Individuals may exceed a **DebtRatio** of 1 whenever they are lending more than they are earning (and some people in difficult scenarios tend to do that).
 # MAGIC 
 # MAGIC Let's default the higher values to a threshold of **1.5**.
 
@@ -567,7 +585,7 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC **x** records have a **RevolvingUtilizationOfUnsecuredLines** value higher than 1. Given the total balance on credit cards and personal lines of credit is divided to the sum of credit limits, this should not exceed 1.
+# MAGIC Some records have a **RevolvingUtilizationOfUnsecuredLines** value higher than 1. Given the total balance on credit cards and personal lines of credit is divided to the sum of credit limits, this should not exceed 1.
 # MAGIC 
 # MAGIC Let's view the distribution of it and then default the weird records to this threshold.
 
@@ -576,6 +594,8 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 fig, ax = plt.subplots()
 
 ax = sns.boxplot(x="RevolvingUtilizationOfUnsecuredLines", data = trainingSDF.toPandas())
+ax.set_xscale("log")
+
 
 display(fig)
 
@@ -612,7 +632,7 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC 3924 missing values out of the total number of rows is not bad at all.
+# MAGIC About 3000 missing values out of the total number of rows is not bad at all.
 # MAGIC 
 # MAGIC Let's see how the distribution of this variable looks. We will understand the mode from it and will be able to impute using it.
 
@@ -626,17 +646,17 @@ fig, ax = plt.subplots()
 # the computed histogram needs to be loaded in a pandas dataframe so we will be able to plot it using sns
 dependents_histogram_df = pd.DataFrame(
     list(zip(*dependents_histogram)), 
-    columns=['bin', 'frequency']
+    columns=['bin', 'count']
 )
 
-ax = sns.barplot(x = "bin", y = "frequency", data = dependents_histogram_df)
+ax = sns.barplot(x = "bin", y = "count", data = dependents_histogram_df)
 
 display(fig)
 
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC We can tell from the barplot above that the mode of this column is 0. Let's impute the missing values with it.
+# MAGIC We can tell from the barplot above that the mode (most frequent value) of this column is 0. Let's impute the missing values with it.
 
 # COMMAND ----------
 
@@ -658,37 +678,392 @@ trainingSDF.createOrReplaceTempView(temp_table_name)
 
 # COMMAND ----------
 
+# Check of the summary statistics of the features now
+display(trainingSDF.describe())
+
+# COMMAND ----------
+
 # MAGIC %md
-# MAGIC ## Model Training and Validation
+# MAGIC ## Building our first model
+
+# COMMAND ----------
+
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import DecisionTreeClassifier
+from pyspark.ml.feature import VectorAssembler, StringIndexer, MinMaxScaler
+
+# Index categorical features
+categorical_indexer = StringIndexer(inputCol="age_banding", outputCol="age_banding_indexed")
+
+# assemble all features into a features vector
+feature_assembler = VectorAssembler(
+    inputCols=[
+   'RevolvingUtilizationOfUnsecuredLines',
+   'NumberOfTime30-59DaysPastDueNotWorse',
+   'NumberOfOpenCreditLinesAndLoans',
+   'NumberOfTimes90DaysLate',
+   'NumberRealEstateLoansOrLines',
+   'NumberOfTime60-89DaysPastDueNotWorse',
+   'NumberOfDependents',
+   'age_banding_indexed',
+   'initialDebt',
+   'DebtRatio',
+   'MonthlyIncome'],
+    outputCol="features")
+
+# scale features 
+scaler = MinMaxScaler(inputCol="features", outputCol="scaledFeatures")
+
+
+# Train a DecisionTree model.
+decision_tree_classifier = DecisionTreeClassifier(labelCol="SeriousDlqin2yrs", featuresCol="scaledFeatures",
+                            impurity="gini", maxDepth=5, seed=1)
+
+# Chain assembler and model in a Pipeline
+dtc_pipeline = Pipeline(stages=[categorical_indexer, feature_assembler, scaler, decision_tree_classifier])
+
+# Train model. 
+dtc_model = dtc_pipeline.fit(trainingSDF)
+
+print(dtc_model.stages[3])
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC # Testing the model
+
+# COMMAND ----------
+
+testingSDF = imputeAgeWithMedian(testingSDF, trainingMedianAge)
+testingSDF = addAgeBanding(testingSDF)
+testingSDF = addInitialDebtColumn(testingSDF)
+testingSDF = imputeMonthlyIncome(testingSDF, trainingIncomeMedian)
+testingSDF = recalculateDebtRatio(testingSDF)
+testingSDF = defaultDebtRatioToThreshold(testingSDF)
+testingSDF = defaultRevolvingUtilizationToThreshold(testingSDF)
+testingSDF = imputeNumberOfDependents(testingSDF)
+
+# Make the dataframe available in the SQL context
+test_temp_table_name = "testingSDF"
+
+# Make the dataframe available in the SQL context
+testingSDF.createOrReplaceTempView(test_temp_table_name)
+
+display(testingSDF)
+
+# COMMAND ----------
+
+# Make predictions.
+dtc_predictions = dtc_model.transform(testingSDF)
+
+# Select example rows to display.
+display(dtc_predictions.select("probability", "prediction", "SeriousDlqin2yrs"))
+
+
+# COMMAND ----------
+
+# display the confusion matrix
+from sklearn.metrics import confusion_matrix
+
+def plotConfusionMatrix(confusion_matrix):
+  fig, ax = plt.subplots()
+  plt.imshow(confusion_matrix, interpolation='nearest', cmap=plt.cm.Wistia)
+  classNames = ['Negative','Positive']
+  ax.set_title(f'Confusion Matrix')
+  ax.set_ylabel('True label')
+  ax.set_xlabel('Predicted label')
+  tick_marks = np.arange(len(classNames))
+  ax.set_xticks(tick_marks)
+  ax.set_yticks(tick_marks)
+  s = [['TN','FP'], ['FN', 'TP']]
+  for i in range(2):
+      for j in range(2):
+          ax.text(j,i, str(s[i][j])+" = "+str(confusion_matrix[i][j]))
+  display(fig)
+  
+  
+dtc_confusion_matrix = confusion_matrix(dtc_predictions.select("SeriousDlqin2yrs").collect(), dtc_predictions.select("prediction").collect())
+plotConfusionMatrix(dtc_confusion_matrix)
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC 
-# MAGIC In order to train this problem, we are going to use the AutoML from the Azure Machine Learning Service SDK.
+# MAGIC ###Precision and Recall
+# MAGIC 
+# MAGIC ![Precision and Recall](https://upload.wikimedia.org/wikipedia/commons/thumb/2/26/Precisionrecall.svg/350px-Precisionrecall.svg.png)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = dtc_confusion_matrix.ravel()
+print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
+print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC ### Sensitivity and Specificity, and the ROC Curve
+# MAGIC 
+# MAGIC ![Sensitivity and specificity](https://upload.wikimedia.org/wikipedia/commons/thumb/e/e7/Sensitivity_and_specificity.svg/350px-Sensitivity_and_specificity.svg.png)
+
+# COMMAND ----------
+
+# plot the ROC curve
+from sklearn.metrics import roc_curve, auc
+
+def plotROCCurve(predictions, show_thresholds=False):
+  results = predictions.select(['probability', 'SeriousDlqin2yrs']).collect()
+  y_score = [float(i[0][1]) for i in results]
+  y_true = [float(i[1]) for i in results]
+
+  fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label = 1)
+  roc_auc = auc(fpr, tpr)
+
+  fig, ax = plt.subplots()
+  ax.plot(fpr, tpr, label='ROC curve (area = %0.4f)' % roc_auc)
+  ax.plot([0, 1], [0, 1], 'k--')
+  if show_thresholds:
+      tr_idx = np.arange(385, len(thresholds), 700)
+      for i in tr_idx:
+        ax.plot(fpr[i], tpr[i], "xr")
+        ax.annotate(xy=(fpr[i], tpr[i]), s="%0.3f" % thresholds[i])
+  ax.set_xlim([0.0, 1.0])
+  ax.set_ylim([0.0, 1.0])
+  ax.set_xlabel('False Positive Rate (1 - Specificity)')
+  ax.set_ylabel('True Positive Rate (Sensitivity)')
+  ax.set_title('Receiver operating characteristic')
+  ax.legend(loc="lower right")
+  display(fig)
+
+plotROCCurve(dtc_predictions)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC ## Gradient Boosted Trees
+
+# COMMAND ----------
+
+from pyspark.ml.classification import GBTClassifier
+
+
+# Train a Gradient-boosted tree classifier model.
+gbt_classifier = GBTClassifier(labelCol="SeriousDlqin2yrs", featuresCol="features",
+                            maxIter=35, seed=1)
+
+# Chain assembler and model in a Pipeline
+gbt_pipeline = Pipeline(stages=[categorical_indexer, feature_assembler, scaler, gbt_classifier])
+
+# Train model. 
+gbt_model = gbt_pipeline.fit(trainingSDF)
+
+print(gbt_model.stages[3])
+
+# COMMAND ----------
+
+# Make predictions.
+gbt_predictions = gbt_model.transform(testingSDF)
+
+# Select example rows to display.
+display(gbt_predictions.select("probability", "prediction", "SeriousDlqin2yrs"))
+
+# COMMAND ----------
+
+gbt_confusion_matrix = confusion_matrix(gbt_predictions.select("SeriousDlqin2yrs").collect(), gbt_predictions.select("prediction").collect())
+plotConfusionMatrix(gbt_confusion_matrix)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = gbt_confusion_matrix.ravel()
+print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
+print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
+
+# COMMAND ----------
+
+# plot the precision - recall curve
+from sklearn.metrics import precision_recall_curve
+
+def plotPRCurve(predictions):
+  results = predictions.select(['probability', 'SeriousDlqin2yrs']).collect()
+  y_score = [float(i[0][1]) for i in results]
+  y_true = [float(i[1]) for i in results]
+
+  precision, recall, _ = precision_recall_curve(y_true, y_score, pos_label = 1)
+
+  fig, ax = plt.subplots()
+  ax.step(recall, precision)
+  ax.set_xlim([0.0, 1.0])
+  ax.set_ylim([0.0, 1.0])
+  ax.set_xlabel('Recall')
+  ax.set_ylabel('Precision')
+  ax.set_title('Precision - Recall Curve')
+  display(fig)
+
+plotPRCurve(gbt_predictions)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = gbt_confusion_matrix.ravel()
+print(f"Sensitivity = TP / (TP + FN) = {tp/(tp+fn)}")
+print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
+
+# COMMAND ----------
+
+plotROCCurve(gbt_predictions)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Selecting a better threshold for class separation
+
+# COMMAND ----------
+
+plotROCCurve(gbt_predictions, show_thresholds = True)
+
+# COMMAND ----------
+
+# select a different threshold for class separation, make predictions based on that threshold, and recalculate Precision, Recall, Sensitivity and Specificity.
+from pyspark.sql.types import FloatType
+
+get_positive_probability=udf(lambda v:float(v[1]),FloatType())
+
+
+selected_threshold = 0.11
+pred_colname = f'prediction-threshold'
+gbt_predictions_threshold = gbt_predictions.withColumn(pred_colname, 
+                                       F.when(get_positive_probability('probability') < selected_threshold,0)
+                                                       .otherwise(1))
+                                                       
+display(gbt_predictions_threshold.select("probability", "prediction", pred_colname, "SeriousDlqin2yrs"))                                                
+
+# COMMAND ----------
+
+gbt_threshold_confusion_matrix = confusion_matrix(gbt_predictions_threshold.select("SeriousDlqin2yrs").collect(), gbt_predictions_threshold.select("prediction-threshold").collect())
+plotConfusionMatrix(gbt_threshold_confusion_matrix)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = gbt_threshold_confusion_matrix.ravel()
+
+print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
+print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
+
+print(f"Sensitivity = TP / (TP + FN) = {tp/(tp+fn)}")
+print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC 
+# MAGIC ## Hyperparameter Tuning
+
+# COMMAND ----------
+
+print(gbt_classifier.explainParams())
+
+# COMMAND ----------
+
+from pyspark.ml.tuning import ParamGridBuilder, CrossValidator
+from pyspark.ml.evaluation import BinaryClassificationEvaluator
+
+
+paramGrid = (ParamGridBuilder()
+             .addGrid(gbt_classifier.maxDepth, [5, 8])
+             .addGrid(gbt_classifier.maxIter, [25, 40])
+             .addGrid(gbt_classifier.stepSize, [0.1, 0.2])
+             .build())
+
+
+evaluator = BinaryClassificationEvaluator(
+  rawPredictionCol="prediction", labelCol="SeriousDlqin2yrs", metricName="areaUnderROC")
+
+cv = CrossValidator(estimator=gbt_pipeline, estimatorParamMaps=paramGrid, evaluator=evaluator, numFolds=3)
+
+# Train model. 
+gbt_models_cv = cv.fit(trainingSDF)
+
+# COMMAND ----------
+
+best_model = gbt_models_cv.bestModel.stages[3]
+print(best_model.explainParams())
+
+# COMMAND ----------
+
+# Make predictions.
+gbt_cv_predictions = gbt_models_cv.transform(testingSDF)
+
+# Select example rows to display.
+display(gbt_cv_predictions.select("probability", "prediction", "SeriousDlqin2yrs"))
+
+# COMMAND ----------
+
+plotROCCurve(gbt_cv_predictions, show_thresholds = True)
+
+# COMMAND ----------
+
+selected_threshold = 0.11
+pred_colname = f'prediction-threshold'
+gbt_cv_predictions_threshold = gbt_cv_predictions.withColumn(pred_colname, 
+                                       F.when(get_positive_probability('probability') < selected_threshold,0)
+                                                       .otherwise(1))
+                                                       
+display(gbt_cv_predictions_threshold.select("probability", "prediction", pred_colname, "SeriousDlqin2yrs"))  
+
+# COMMAND ----------
+
+gbt_cv_threshold_confusion_matrix = confusion_matrix(gbt_cv_predictions_threshold.select("SeriousDlqin2yrs").collect(), gbt_cv_predictions_threshold.select("prediction-threshold").collect())
+plotConfusionMatrix(gbt_cv_threshold_confusion_matrix)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = gbt_cv_threshold_confusion_matrix.ravel()
+
+print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
+print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
+
+print(f"Sensitivity = TP / (TP + FN) = {tp/(tp+fn)}")
+print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Using Automated ML from Azure ML Service
+# MAGIC 
+# MAGIC We are now going to use the [AutoML feature](https://docs.microsoft.com/en-us/azure/machine-learning/service/concept-automated-ml) from the Azure Machine Learning Service SDK.
+# MAGIC 
+# MAGIC Automated machine learning, also referred to as automated ML, is the process of automating the time consuming, iterative tasks of machine learning model development. It allows data scientists, analysts, and developers to build ML models with high scale, efficiency, and productivity all while sustaining model quality. Automated ML is based on a breakthrough from our Microsoft Research division.
+# MAGIC 
+# MAGIC Traditional machine learning model development is resource-intensive, requiring significant domain knowledge and time to produce and compare dozens of models. Apply automated ML when you want Azure Machine Learning to train and tune a model for you using the target metric you specify. The service then iterates through ML algorithms paired with feature selections, where each iteration produces a model with a training score. The higher the score, the better the model is considered to "fit" your data.
+# MAGIC 
 # MAGIC 
 # MAGIC We will provide the cleansed training data to Azure ML which will test multiple types of algorithms in order to maximize a certain evaluation criteria we define. As per the [initial challenge from kaggle](https://www.kaggle.com/c/GiveMeSomeCredit), the criteria of choice is AUC (Area Under Curve).
 # MAGIC 
-# MAGIC The validation during training is done by using cross validation in 10 folds.
+# MAGIC The validation during training is done by using cross validation in 5 folds.
 # MAGIC 
 # MAGIC After we are done, the best trained model will be evaluated against a separated dataset (the test dataset) in order to understand real _performance_.
 # MAGIC 
-# MAGIC ### Training using AutoML from Azure
+# MAGIC ### Training using AutoML
 # MAGIC 
 # MAGIC In order to get things going, we first initialize our Workspace...
 
 # COMMAND ----------
 
-subscription_id = "6787a35f-386b-4845-91d1-695f24e0924b" #you should be owner or contributor
-resource_group = "GlobalAINight-ML-RG" #you should be owner or contributor
-workspace_name = "globalainight-ml-wksp" #your workspace name
+subscription_id = "6787a35f-386b-4845-91d1-695f24e0924b" # the Azure subscription ID you are using
+azureml_resource_group = "spark-ml-workshop-25" #you should be owner or contributor
+azureml_workspace_name = "azureml-lab-25" #your Azure Machine Learning workspace name
 
 import azureml.core
 
 # Check core SDK version number - based on build number of preview/master.
-print("SDK version:", azureml.core.VERSION)
+print("Azure ML SDK version:", azureml.core.VERSION)
 
 from azureml.core import Workspace
 
-ws = Workspace(workspace_name = workspace_name,
+ws = Workspace(workspace_name = azureml_workspace_name,
                subscription_id = subscription_id,
-               resource_group = resource_group)
+               resource_group = azureml_resource_group)
 
 # Persist the subscription id, resource group name, and workspace name in aml_config/config.json.
 ws.write_config()
@@ -696,9 +1071,6 @@ ws.write_config()
 # COMMAND ----------
 
 ws = Workspace.from_config()
-
-#if you use a different file name
-#ws = Workspace.from_config(<full path>)
 
 print('Workspace name: ' + ws.name, 
       'Azure region: ' + ws.location, 
@@ -794,10 +1166,9 @@ set_diagnostics_collection(send_diagnostics = True)
 
 # COMMAND ----------
 
-#Automated ML requires a dataflow, which is different from dataframe.
-#If your data is in a dataframe, please use read_pandas_dataframe to convert a dataframe to dataflow before usind dprep.
-
+# prepare the data for AutoML
 import azureml.dataprep as dataprep
+
 training_sdf = trainingSDF
 training_sdf = training_sdf.drop("Idx", "initialDebt")
 
@@ -858,18 +1229,17 @@ Y_train.head(5)
 automl_config = AutoMLConfig(task = 'classification',
                              debug_log = 'automl_errors.log',
                              primary_metric = 'AUC_weighted',
-                             iteration_timeout_minutes = 10,
+                             iteration_timeout_minutes = 5,
                              iterations = 10,
-                             n_cross_validations = 10,
-                             max_concurrent_iterations = 1, #change it based on number of worker nodes
+                             n_cross_validations = 5,
+                             max_concurrent_iterations = 1, 
                              verbosity = logging.INFO,
                              spark_context=sc, #databricks/spark related
                              X = X_train, 
                              y = Y_train,
                              path = project_folder,
                              preprocess = True,
-                             enable_voting_ensemble = True,
-                             enable_stack_ensemble = True)
+                             enable_voting_ensemble = True)
 
 # COMMAND ----------
 
@@ -905,162 +1275,10 @@ displayHTML("<a href={} target='_blank'>Your experiment in Azure Portal: {}</a>"
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ### Evaluating the best model from AutoML against real unseen data
+# MAGIC ### Evaluating the best model from AutoML
 # MAGIC 
-# MAGIC Now that we are done with training, we can move forward in evaluating how well this model will actually do on real data.
-# MAGIC 
-# MAGIC For this, we are going to import a new dataset, take it through the same transformations and have the model predict the result.
+# MAGIC Now that we are done with training, we can move forward in evaluating how well this model will actually do on the test data.
 
 # COMMAND ----------
 
-# Test data - file location and type
-test_file_location = dbfs_project_folder + test_data_filename
-file_type = "csv"
 
-# CSV options
-infer_schema = "true"
-first_row_is_header = "true"
-delimiter = ","
-
-# The applied options are for CSV files. For other file types, these will be ignored.
-testSDF = spark.read.format(file_type) \
-  .option("inferSchema", infer_schema) \
-  .option("header", first_row_is_header) \
-  .option("sep", delimiter) \
-  .load(test_file_location)
-
-temp_table_name = "testSDF"
-
-# Make the dataframe available in the SQL context
-testSDF.createOrReplaceTempView(temp_table_name)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC Once the data has been loaded, we have to get this validation dataset through the same pipeline of transformations.
-
-# COMMAND ----------
-
-testSDF = imputeAgeWithMedian(testSDF)
-
-testSDF = testSDF.withColumn('age_banding', age_banding_udf(testSDF.age))
-testSDF = testSDF.drop('age')
-
-testSDF = addInitialDebtColumn(testSDF)
-testSDF = imputeMonthlyIncome(testSDF)
-testSDF = recalculateDebtRatio(testSDF)
-testSDF = defaultDebtRatioToThreshold(testSDF)
-testSDF = defaultRevolvingUtilizationToThreshold(testSDF)
-testSDF = imputeNumberOfDependents(testSDF)
-
-# Make the dataframe available in the SQL context
-testSDF.createOrReplaceTempView(temp_table_name)
-display(testSDF)
-
-# COMMAND ----------
-
-# Save the actual result in a separate dataframe and predict the model result
-import pyspark.sql.functions as f
-
-resultsSDF = testSDF.select("Idx", "SeriousDlqin2yrs")
-temp_table_name = "resultsSDF"
-
-# Make the dataframe available in the SQL context
-resultsSDF.createOrReplaceTempView(temp_table_name)
-
-testSDF = testSDF.drop("SeriousDlqin2yrs", "initialDebt")
-
-predictions = fitted_model.predict(testSDF.drop("Idx").toPandas())
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC The raw results... which are not of any use for now.
-
-# COMMAND ----------
-
-predictionsSDF = spark.createDataFrame(pd.DataFrame(predictions, columns=["SeriousDlqin2yrs_pred"]).reset_index(drop = False))
-
-from pyspark.sql.types import IntegerType
-
-# Change column to be int
-predictionsSDF = predictionsSDF.withColumn(
-    'int_SeriousDlqin2yrs_pred',
-    predictionsSDF.SeriousDlqin2yrs_pred.cast(IntegerType())
-).drop('SeriousDlqin2yrs_pred') \
- .withColumnRenamed('int_SeriousDlqin2yrs_pred', 'SeriousDlqin2yrs_pred')
-
-display(predictionsSDF)
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC In order to make sense of the results, we need to:
-# MAGIC - join the **predictions** with the initial dataset containing only the independent variables
-# MAGIC - join the actual **results** back to the dataset obtained at the previous step
-
-# COMMAND ----------
-
-testsAndPredictionsSDF = testSDF.join(predictionsSDF, testSDF.Idx == predictionsSDF.index+1)
-
-comparisonSDF = testsAndPredictionsSDF.join(resultsSDF, testsAndPredictionsSDF.Idx == resultsSDF.Idx)
-
-comparisonSDF.createOrReplaceTempView("comparisonSDF")
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ### Metrics
-# MAGIC Once all the joining has been finished, we can look at a raw confusion matrix.
-
-# COMMAND ----------
-
-# MAGIC %sql
-# MAGIC select SeriousDlqin2yrs, SeriousDlqin2yrs_pred, count(1) as Occurences 
-# MAGIC   from comparisonSDF 
-# MAGIC group by SeriousDlqin2yrs, SeriousDlqin2yrs_pred 
-# MAGIC order by SeriousDlqin2yrs, SeriousDlqin2yrs_pred
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC Let's calculate the classic classification metrics:
-# MAGIC - accuracy
-# MAGIC - recall
-# MAGIC - precision
-# MAGIC - AUC
-# MAGIC 
-# MAGIC Let's also plot the ROC curve.
-
-# COMMAND ----------
-
-evaluationDF = comparisonSDF.select("SeriousDlqin2yrs", "SeriousDlqin2yrs_pred").toPandas()
-
-# COMMAND ----------
-
-from sklearn.metrics import accuracy_score, recall_score, precision_score, f1_score, roc_auc_score
-
-print("Accuracy score is: {}".format(accuracy_score(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)))
-print("Recall score is: {}".format(recall_score(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)))
-print("Precision score is: {}".format(precision_score(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)))
-print("F1 score is: {}".format(f1_score(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)))
-print("AUC is: {}".format(roc_auc_score(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)))
-
-# COMMAND ----------
-
-from sklearn.metrics import roc_curve
-
-fpr, tpr, thresholds = roc_curve(evaluationDF.SeriousDlqin2yrs.values, evaluationDF.SeriousDlqin2yrs_pred.values)
-
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots()
-
-ax = plt.plot(fpr, tpr, 'r-', label = 'ROC')
-ax = plt.plot([0,1], [0,1], 'k-', label='random')
-ax = plt.plot([0,0,1,1], [0,1,1,1], 'g-', label='perfect')
-ax = plt.legend()
-ax = plt.xlabel('False Positive Rate')
-ax = plt.ylabel('True Positive Rate')
-
-display(fig)
