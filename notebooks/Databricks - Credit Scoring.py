@@ -11,7 +11,7 @@
 # MAGIC 
 # MAGIC ## The problem
 # MAGIC 
-# MAGIC Down below you will find a possible solution to the challenge described in [c/GiveMeSomeCredit](https://www.kaggle.com/c/GiveMeSomeCredit) where participants where required to improve on the state of the art in credit scoring, by predicting the probability that somebody will experience financial distress in the next two years. The goal was to build a model that borrowers can use to help make the best financial decisions.
+# MAGIC Down below you will find a possible solution to the challenge described in [c/GiveMeSomeCredit](https://www.kaggle.com/c/GiveMeSomeCredit) where participants where required to improve on the state of the art in credit scoring, by predicting the probability that somebody will experience financial distress in the next two years. 
 # MAGIC 
 # MAGIC ## The data
 # MAGIC 
@@ -42,14 +42,11 @@
 # MAGIC 
 # MAGIC The benchmark/real unseen data you could use to test your model predictions may be downloaded from [here](https://github.com/dlawrences/GlobalAINightBucharest/blob/master/data/cs-test.csv).
 # MAGIC 
-# MAGIC ## Steps
+# MAGIC ## The Data Science Process
 # MAGIC 
-# MAGIC The steps we are going to go through next to solve this problem are the following:
+# MAGIC This is the outline of the process we'll be following in this workshop.
 # MAGIC 
-# MAGIC 1. Data import
-# MAGIC 2. Exploratory Data Analysis & Data Cleaning
-# MAGIC 3. Model Training & Validation
-# MAGIC 4. Evaluating the best model from AutoML against real unseen data
+# MAGIC ![Data Science Process](https://raw.githubusercontent.com/neaorin/PredictTheWorldCup/master/images/datascience_process.jpg)
 
 # COMMAND ----------
 
@@ -198,8 +195,8 @@ print("Positive event rate: {} %".format(class_1/(class_0+class_1) * 100))
 # MAGIC A positive event rate of 6.6% is by no means ideal. Going through with this distribution for the target class may mean that the minorit class will be ignored by the algorithm we are going to use to model the problem, thus the model will be biased to customers which are not likely to default.
 # MAGIC 
 # MAGIC A couple of ideas which we are going to take into consideration going further to go around this problem:
-# MAGIC - given we have a lot of training data (100k+ observations), we may actually considering resampling the dataset using the **imbalanced-learn** module.
-# MAGIC - we are going to use an evaluation metric which compensates the imbalance between classes, e.g. **AUC**
+# MAGIC - given we have a lot of training data (100k+ observations), we may actually considering resampling the dataset.
+# MAGIC - we are going to use an evaluation metric which compensates the imbalance between classes, e.g. **ROC AUC**
 
 # COMMAND ----------
 
@@ -1239,7 +1236,8 @@ automl_config = AutoMLConfig(task = 'classification',
                              y = Y_train,
                              path = project_folder,
                              preprocess = True,
-                             enable_voting_ensemble = True)
+                             enable_voting_ensemble = False,
+                             enable_stack_ensemble = False)
 
 # COMMAND ----------
 
@@ -1263,6 +1261,10 @@ print(fitted_model)
 
 # COMMAND ----------
 
+print(fitted_model.steps)
+
+# COMMAND ----------
+
 # MAGIC %md 
 # MAGIC **Portal URL for Monitoring Runs**
 # MAGIC 
@@ -1278,6 +1280,70 @@ displayHTML("<a href={} target='_blank'>Your experiment in Azure Portal: {}</a>"
 # MAGIC ### Evaluating the best model from AutoML
 # MAGIC 
 # MAGIC Now that we are done with training, we can move forward in evaluating how well this model will actually do on the test data.
+
+# COMMAND ----------
+
+automl_X_test = testingSDF.drop("Idx", "initialDebt","SeriousDlqin2yrs")
+automl_Y_test = testingSDF.select("SeriousDlqin2yrs")
+
+# COMMAND ----------
+
+automl_predictions_pd = fitted_model.predict_proba(automl_X_test.toPandas())
+tempdf = pd.concat([pd.DataFrame(automl_predictions_pd), automl_Y_test.toPandas()], axis=1)
+automl_predictions = spark.createDataFrame(tempdf)
+display(automl_predictions)
+
+# COMMAND ----------
+
+def plotROCCurve2(predictions, show_thresholds=False):
+  results = predictions.select(['1', 'SeriousDlqin2yrs']).collect()
+  y_score = [float(i[0]) for i in results]
+  y_true = [float(i[1]) for i in results]
+
+  fpr, tpr, thresholds = roc_curve(y_true, y_score, pos_label = 1)
+  roc_auc = auc(fpr, tpr)
+
+  fig, ax = plt.subplots()
+  ax.plot(fpr, tpr, label='ROC curve (area = %0.4f)' % roc_auc)
+  ax.plot([0, 1], [0, 1], 'k--')
+  if show_thresholds:
+      tr_idx = np.arange(385, len(thresholds), 700)
+      for i in tr_idx:
+        ax.plot(fpr[i], tpr[i], "xr")
+        ax.annotate(xy=(fpr[i], tpr[i]), s="%0.3f" % thresholds[i])
+  ax.set_xlim([0.0, 1.0])
+  ax.set_ylim([0.0, 1.0])
+  ax.set_xlabel('False Positive Rate (1 - Specificity)')
+  ax.set_ylabel('True Positive Rate (Sensitivity)')
+  ax.set_title('Receiver operating characteristic')
+  ax.legend(loc="lower right")
+  display(fig)
+
+plotROCCurve2(automl_predictions, show_thresholds = True)
+
+# COMMAND ----------
+
+selected_threshold = 0.12
+pred_colname = f'prediction-threshold'
+automl_predictions_threshold = automl_predictions_SDF.withColumn(pred_colname, 
+                                       F.when(F.col('1') < selected_threshold, 0)
+                                                       .otherwise(1))
+display(automl_predictions_threshold)
+
+# COMMAND ----------
+
+automl_threshold_confusion_matrix = confusion_matrix(automl_predictions_threshold.select("SeriousDlqin2yrs").collect(), automl_predictions_threshold.select("prediction-threshold").collect())
+plotConfusionMatrix(automl_threshold_confusion_matrix)
+
+# COMMAND ----------
+
+tn, fp, fn, tp = automl_threshold_confusion_matrix.ravel()
+
+print(f"Precision = TP / (TP + FP) = {tp/(tp+fp)}")
+print(f"Recall = TP / (TP + FN) = {tp/(tp+fn)}")
+
+print(f"Sensitivity = TP / (TP + FN) = {tp/(tp+fn)}")
+print(f"Specificity = TN / (TN + FP) = {tn/(tn+fp)}")
 
 # COMMAND ----------
 
